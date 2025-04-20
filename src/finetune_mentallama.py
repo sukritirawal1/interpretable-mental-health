@@ -1,3 +1,4 @@
+# DR Dataset path - RTC:MentalLLaMA/train_data/instruction_data/DR/train.csv
 import os
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import torch
@@ -88,7 +89,7 @@ class MentaLLaMATrainer:
         #     'numeric_label': numeric_labels
         # }
         
-        return batch_output
+        #return batch_output
 
     def train(self):
         self.model.train()
