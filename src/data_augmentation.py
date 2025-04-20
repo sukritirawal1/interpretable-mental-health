@@ -474,7 +474,7 @@ class MentalHealthAugmenter:
         return combined_df
 
 
-def augment_selected_datasets(datasets_dir, output_dir, selected_datasets=None, augmentation_ratio=1):
+def augment_selected_datasets(datasets_dir, output_dir, selected_datasets=None, augmentation_ratio=1, max_samples=None):
     """
     Augment selected datasets from the specified directory using dataset-specific techniques
     
@@ -483,6 +483,7 @@ def augment_selected_datasets(datasets_dir, output_dir, selected_datasets=None, 
         output_dir: Directory to save augmented datasets
         selected_datasets: List of dataset names to augment (defaults to DR, dreaddit, SAD)
         augmentation_ratio: Number of augmented samples to generate per original sample
+        max_samples: Maximum number of samples to process per dataset (for testing)
     """
     if selected_datasets is None:
         selected_datasets = ['DR', 'dreaddit', 'SAD']
@@ -520,6 +521,12 @@ def augment_selected_datasets(datasets_dir, output_dir, selected_datasets=None, 
                 
                 # Read and augment the dataset
                 df = pd.read_csv(input_path)
+                
+                # Limit samples if max_samples is specified
+                if max_samples is not None and len(df) > max_samples:
+                    print(f"Limiting to {max_samples} samples for testing")
+                    df = df.sample(max_samples, random_state=42)
+                
                 if 'query' not in df.columns:
                     # Try to find a suitable text column
                     text_col = None
@@ -556,6 +563,7 @@ if __name__ == "__main__":
     parser.add_argument('--output_dir', type=str, required=True, help="Directory to save augmented datasets")
     parser.add_argument('--datasets', nargs='+', default=['DR', 'dreaddit', 'SAD'], help="Dataset names to augment")
     parser.add_argument('--augmentation_ratio', type=int, default=1, help="Number of augmented samples per original sample")
+    parser.add_argument('--max_samples', type=int, default=None, help="Maximum number of samples to process per dataset")
     
     args = parser.parse_args()
     
@@ -563,5 +571,6 @@ if __name__ == "__main__":
         args.input_dir, 
         args.output_dir, 
         args.datasets,
-        args.augmentation_ratio
+        args.augmentation_ratio,
+        args.max_samples
     )

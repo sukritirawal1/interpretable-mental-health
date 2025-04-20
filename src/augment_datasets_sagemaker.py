@@ -75,6 +75,8 @@ def parse_args():
                         help="Number of augmented samples per original sample (default: 1)")
     parser.add_argument('--sagemaker', action='store_true',
                         help="Running in SageMaker environment")
+    parser.add_argument('--max_samples', type=int, default=None,
+                        help="Maximum number of samples to process per dataset (for testing)")
     
     return parser.parse_args()
 
@@ -101,6 +103,8 @@ def main():
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"Datasets to augment: {args.datasets}")
     logger.info(f"Augmentation ratio: {args.augmentation_ratio}")
+    if args.max_samples:
+        logger.info(f"Testing with max {args.max_samples} samples per dataset")
     
     # Start timer
     start_time = time.time()
@@ -112,7 +116,8 @@ def main():
             input_dir,
             output_dir,
             args.datasets,
-            args.augmentation_ratio
+            args.augmentation_ratio,
+            args.max_samples
         )
         logger.info("Dataset augmentation completed successfully")
         
