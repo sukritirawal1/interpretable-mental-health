@@ -1,41 +1,56 @@
 import pandas as pd
+import os
 import numpy as np
 from torch.utils.data import Dataset
 
 class ExplanationDataset(Dataset):
     def __init__(self, data_path = "data_path.csv", datasets = None):
-        test_data = self.load_augmented_data()
-        if datasets:
-            self.datasets = datasets
-        else:
-            self.datasets = test_data.keys()
+        
+        
             
         self.all_texts = []
         self.all_augs = []
         self.all_goldens = []
         self.all_labels = []
         self.dataset_names = []
-        for dataset in test_data.keys():
-            self.all_texts.extend(test_data[dataset][0])
-            self.all_augs.extend(test_data[dataset][1])
-            
-            goldens = test_data[dataset][2]
-            self.all_goldens.extend(goldens)
-            
-            labels = [self.extract_label(g, dataset) for g in goldens]
-            self.all_labels.extend(labels)
-            
-            self.dataset_names.extend([dataset] * len(goldens))
-            
+        if os.path.isfile(data_path):
+          df = pd.read_csv(data_path)
+          dataset_name = os.path.basename(os.path.dirname(data_path))  # Extract 'DR' from .../DR/train.csv
+
+          self.all_texts = df['query'].tolist()
+          self.all_goldens = df['gpt-3.5-turbo'].tolist()
+          self.all_augs = df['augmented_query'].tolist() if 'augmented_query' in df.columns else [None] * len(self.all_texts)
+          self.all_labels = [self.extract_label(g, dataset_name) for g in self.all_goldens]
+          self.dataset_names = [dataset_name] * len(self.all_texts)
+        
+        else:
+          test_data = self.load_augmented_data()
+          if datasets:
+            self.datasets = datasets
+          else:
+              self.datasets = test_data.keys()
+              for dataset in test_data.keys():
+                  self.all_texts.extend(test_data[dataset][0])
+                  self.all_augs.extend(test_data[dataset][1])
+                  
+                  goldens = test_data[dataset][2]
+                  self.all_goldens.extend(goldens)
+                  
+                  labels = [self.extract_label(g, dataset) for g in goldens]
+                  self.all_labels.extend(labels)
+                  
+                  self.dataset_names.extend([dataset] * len(goldens))
+                  
     def __len__(self):
         return len(self.all_texts)
     
     def __getitem__(self, idx):
         #add dataset name?
         #return = original_text, augmented_text, golden_text, numeric_label, dataset_name
-        return self.all_texts[idx], self.all_augs[idx], self.all_goldens[idx], self.all_labels[idx], self.all_datasets[idx]
-    
-    def load_augmented_data():
+        #return self.all_texts[idx], self.all_augs[idx], self.all_goldens[idx], self.all_labels[idx], self.all_datasets[idx]
+        return self.all_texts[idx], self.all_augs[idx], self.all_goldens[idx], self.all_labels[idx], self.dataset_names[idx]
+
+    def load_augmented_data(self):
         test_data = {}
         for root, ds, fs in os.walk("../test_data/test_instruction"): #update based on shambhavi code
             for fn in fs:
