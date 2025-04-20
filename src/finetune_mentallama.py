@@ -20,9 +20,9 @@ class MentaLLaMATrainer:
         self.epochs = epochs
 
         self.tokenizer = LlamaTokenizer.from_pretrained(model_name)
-        self.tokenizer.pad_token = self.tokenizer.pad_tokenizer or self.tokenizer.eos_token
+        self.tokenizer.pad_token = self.tokenizer.pad_token or self.tokenizer.eos_token
         self.model = LlamaForCausalLM.from_pretrained(model_name).to(self.device)
-        self.model.config.pad_token
+        self.model.config.pad_token_id = self.tokenizer.pad_token_id
         self.bart_scorer = BARTScorer(device=self.device, checkpoint='facebook/bart-large-cnn')
         
         self.dataset = ExplanationDataset(data_path=data_path)
