@@ -136,7 +136,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='The BART-score evaluation.')
     parser.add_argument('--gen_dir_name', type=str)
-    parser.add_argument('--score_method', type=str, default='bart_score', choices=['bart_score', 'bert_score', 'bleu', 'rouge'])
+    parser.add_argument('--score_method', type=str, default='bart_score', choices=['bart_score', 'GPT3_score', 'bert_score', 'bleu', 'rouge'])
                         # ['bart_score', 'GPT3_score', 'bert_score', 'bleu', 'rouge'])
     parser.add_argument('--cuda', action='store_true')
 

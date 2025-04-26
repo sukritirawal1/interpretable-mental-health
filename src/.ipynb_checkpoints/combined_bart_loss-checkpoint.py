@@ -28,7 +28,7 @@ class CombinedBARTLoss(nn.Module):
         gen_labels_tensor = torch.tensor(gen_labels, dtype=torch.long, device=self.device)
         targets = targets.to(torch.long)
         valid_mask = (gen_labels_tensor >= 0 ) & (targets>=0)
-        targets  = targets[valid_mask]
+        targets  = targest[valid_mask]
         gen_labels_tensor = targets[valid_mask]
         if len(gen_labels_tensor) == 0:
             ce_loss = torch.tensor(0.0, device=self.device)

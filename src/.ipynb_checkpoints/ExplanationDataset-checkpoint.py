@@ -65,7 +65,7 @@ class ExplanationDataset(Dataset):
         return test_data
     
     def extract_label(self, raw_answer_text, dataset_name):
-        #print("DATASET NAME IS:", dataset_name)
+        print("DATASET NAME IS:", dataset_name)
         if "Reasoning:" in raw_answer_text:
             answer_text = raw_answer_text.split("Reasoning:")[0].strip()
         else:

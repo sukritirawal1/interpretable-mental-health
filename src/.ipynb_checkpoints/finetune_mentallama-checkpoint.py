@@ -28,7 +28,6 @@ class MentaLLaMATrainer:
         self.tokenizer.pad_token = self.tokenizer.pad_token or self.tokenizer.eos_token
         
         self.model = LlamaForCausalLM.from_pretrained(model_name, device_map="auto", load_in_8bit=True)
-        self.model.config.use_cache = False
         self.model.gradient_checkpointing_enable()
 
         self.model.config.pad_token_id = self.tokenizer.pad_token_id
