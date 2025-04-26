@@ -1,52 +1,4 @@
-import pandas as pd
-import numpy as np
-from torch.utils.data import Dataset
-import os
-
-class ExplanationDataset(Dataset):
-    def __init__(self, data_path = "data_path.csv", datasets = None):
-        test_data = self.load_augmented_data()
-        if datasets:
-            self.datasets = datasets
-        else:
-            self.datasets = test_data.keys()
-            
-        self.all_texts = []
-        self.all_augs = []
-        self.all_goldens = []
-        self.all_labels = []
-        self.dataset_names = []
-        for dataset in test_data.keys():
-            self.all_texts.extend(test_data[dataset][0])
-            self.all_augs.extend(test_data[dataset][1])
-            
-            goldens = test_data[dataset][2]
-            self.all_goldens.extend(goldens)
-            
-            labels = [self.extract_label(g, dataset) for g in goldens]
-            self.all_labels.extend(labels)
-            
-            self.dataset_names.extend([dataset] * len(goldens))
-            
-    def __len__(self):
-        return len(self.all_texts)
-    
-    def __getitem__(self, idx):
-        #return = original_text, augmented_text, golden_text, numeric_label, dataset_name
-        return self.all_texts[idx], self.all_augs[idx], self.all_goldens[idx], self.all_labels[idx], self.all_datasets[idx]
-    
-    def load_augmented_data():
-        test_data = {}
-        for root, ds, fs in os.walk("../test_data/test_instruction"): #update based on shambhavi code
-            for fn in fs:
-                data = pd.read_csv(os.path.join(root, fn))
-                texts = data['query'].to_list()
-                augmented_texts = data['augmented_query'].tolist() #update based on shambhavi code
-                labels = data['gpt-3.5-turbo'].to_list()
-                test_data[fn.split('.')[0]] = [texts, augmented_texts, labels] #update based on shambhavi code
-        return test_data
-    
-    def extract_label(self, raw_answer_text, dataset_name):
+def extract_label(raw_answer_text, dataset_name):
         if "Reasoning:" in raw_answer_text:
             answer_text = raw_answer_text.split("Reasoning:")[0].strip()
         else:
@@ -124,5 +76,16 @@ class ExplanationDataset(Dataset):
             print("Check dataset name buddy boi")
             return None
         
-        
-        
+def get_num_classes(dataset_name):
+    if dataset_name == 'CAMS':
+        return 6
+    elif dataset_name in ['CLP', 'DR', 'dreaddit', 'loneliness', 'Irf', 'MultiWD']:
+        return 2
+    elif dataset_name == 'SAD':
+        return 9
+    elif dataset_name == 'swmh':
+        return 5
+    elif dataset_name == 't-sid':
+        return 4
+    else:
+        raise ValueError(f"Unknown dataset: {dataset_name}")
