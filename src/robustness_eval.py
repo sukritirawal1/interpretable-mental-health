@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import torch
 from tqdm import tqdm
+import argparse
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -20,9 +21,9 @@ def load_augmented_data():
 test_data = load_augmented_data()
 
 def save_responses_to_csv(dataset_name, queries, augmented_queries, 
-                         responses, augmented_responses, goldens):
+                         responses, augmented_responses, goldens, output_path):
 
-    output_dir = "../generated_responses/"
+    output_dir = output_path
     os.makedirs(output_dir, exist_ok=True)
     
     data = {
@@ -41,7 +42,8 @@ def save_responses_to_csv(dataset_name, queries, augmented_queries,
 
 def generate_response(model, tokenizer, queries, batch_size=5):
     responses = []
-    for i in range(0, len(queries), batch_size):
+    print(len(queries))
+    for i in tqdm(range(0, len(queries), batch_size)):
         batch_data = queries[i: min(i+batch_size, len(queries))]
         #print(batch_data[:2])
         inputs = tokenizer(batch_data, return_tensors="pt", padding=True)
@@ -58,10 +60,10 @@ def generate_response(model, tokenizer, queries, batch_size=5):
         print(i)
     return responses
 
-def generate_all_responses(model, tokenizer, test_data, device, batch_size):
+def generate_all_responses(model, tokenizer, test_data, device, batch_size, output_path):
     generated_text = {}
     augmented_generated_text = {}
-    goldens = {}
+    golden_all = {}
 
     model.to(device)
 
@@ -70,16 +72,16 @@ def generate_all_responses(model, tokenizer, test_data, device, batch_size):
         #    continue
         print('Generating for dataset: {}'.format(dataset_name))
         queries, augmented_queries, goldens = test_data[dataset_name]
-        goldens[dataset_name]  = goldens
+        golden_all[dataset_name]  = goldens
         
         responses = generate_response(model, tokenizer, queries, batch_size)
         generated_text[dataset_name] = responses
         
         augmented_responses = generate_response(model, tokenizer, augmented_queries, batch_size)
         augmented_generated_text[dataset_name] = augmented_responses
-        save_responses_to_csv(dataset_name, queries, augmented_queries, responses, augmented_responses, goldens)
+        save_responses_to_csv(dataset_name, queries, augmented_queries, responses, augmented_responses, goldens, output_path)
 
-    return generated_text, augmented_generated_text, goldens
+    return generated_text, augmented_generated_text, golden_all
 
 
 def bart_augment_score(bart_scorer, og_responses, augmented_responses):
@@ -102,57 +104,68 @@ def bart_golden_score(bart_scorer, og_responses, goldens):
     return avg_score, og_to_golden_scores
 
     
-def generate_main(datasets, model_path, load_custom_pretrained=False, custom_pretrained_path=None):
+def generate_main(datasets, model_path, load_custom_pretrained=False, custom_pretrained_path=None, output_path="../generated_responses/"):
     from transformers import LlamaForCausalLM, LlamaTokenizer
     model = LlamaForCausalLM.from_pretrained(model_path)
     tokenizer = LlamaTokenizer.from_pretrained(model_path, padding_side='left')
     if load_custom_pretrained:
-        model.load_state_dict(torch.load(custom_pretrained_path, map_location=device))
+        checkpoint = torch.load(custom_pretrained_path, map_location=device)
+        new_checkpoint = {k.replace("base_model.model.", ""): v for k, v in checkpoint.items()}
+        model.load_state_dict(new_checkpoint)
+        print("Model loaded without error, huge win... ok fine lil win")
         
     test_data = load_augmented_data()
     test_data = {k: test_data[k] for k in datasets}
-    generated_text, augmented_generated_text, goldens = generate_all_responses(model, tokenizer, test_data, device, batch_size=5)
+    batch_size = 5
+    generated_text, augmented_generated_text, goldens = generate_all_responses(model, tokenizer, test_data, device, batch_size, output_path)
 
-def score_augments_main(datasets):
+def score_augments_main(datasets, output_path):
     from BARTScore.bart_score import BARTScorer
     bart_scorer = BARTScorer(device=device, checkpoint='facebook/bart-large-cnn')
     bart_scorer.load(path='bart_score.pth')
     
     for dataset in datasets:
-        data = pd.read_csv(os.path.join("../generated_responses/", f"{dataset}_responses.csv"))
+        data = pd.read_csv(os.path.join(output_path, f"{dataset}_responses.csv"))
         og_responses = [str(r) for r in data['original_response'].to_list()]
         augmented_responses = data['augmented_response'].to_list()
         avg_response_similarity, response_similarity_scores = bart_augment_score(bart_scorer, og_responses, augmented_responses)
         data['golden_comparison_scores'] = response_similarity_scores
-        data.to_csv(f"../generated_responses/{dataset}_augmented_comparison.csv", index=False)
+        data.to_csv(f"{output_path}{dataset}_augmented_comparison.csv", index=False)
 
-def score_golden_main(datasets):
+def score_golden_main(datasets, output_path):
     from BARTScore.bart_score import BARTScorer
     bart_scorer = BARTScorer(device=device, checkpoint='facebook/bart-large-cnn')
     bart_scorer.load(path='bart_score.pth')
     
     for dataset in datasets:
-        data = pd.read_csv(os.path.join("../generated_responses/", f"{dataset}_responses.csv"))
+        data = pd.read_csv(os.path.join(output_path, f"{dataset}_responses.csv"))
         og_responses = [str(r) for r in data['original_response'].to_list()]
         goldens = data['augmented_response'].to_list()
         avg_score, og_to_golden_scores = bart_golden_score(bart_scorer, og_responses, goldens)
         data['golden_comparison_scores'] = og_to_golden_scores
-        data.to_csv(f"../generated_responses/{dataset}_golden_comparison.csv", index=False)
+        data.to_csv(f"{output_path}{dataset}_golden_comparison.csv", index=False)
     
     
     
-def main(datasets, model_path, option, load_custom_pretrained, custom_pretrained_path=None):
+def main(datasets, model_path, option, load_custom_pretrained, custom_pretrained_path=None, output_path="../generated_responses/"):
     if option == "generate":
-        generate_main(datasets, model_path, load_custom_pretrained, custom_pretrained_path)
+        print("Loading cusom pretrained:", load_custom_pretrained, custom_pretrained_path)
+        generate_main(datasets, model_path, load_custom_pretrained, custom_pretrained_path, output_path)
     elif option == "augment_score":
-        score_augments_main(datasets)
+        score_augments_main(datasets, output_path)
     elif option == "golden_score":
-        score_golden_main(datasets)
+        score_golden_main(datasets, output_path)
     else:
         raise ValueError("Invalid option. Choose 'generate' or 'augment_score' or 'golden_score'.")
     
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="MentaLLaMA Robustness Evaluation")
+    parser.add_argument("--datasets", type=str, nargs='+', help="List of datasets to evaluate")
+    parser.add_argument("--model_path", type=str, default="klyang/MentaLLaMA-chat-7B", help="Path to the model")
+    parser.add_argument("--option", type=str, choices=["generate", "augment_score", "golden_score"], help="Evaluation option")
+    parser.add_argument("--load_custom_pretrained", action="store_true", help="Load custom pretrained model")
+    parser.add_argument("--custom_pretrained_path", default= None, type=str, help="Path to the custom pretrained model")
+    parser.add_argument("--output_path", type=str, default="../generated_responses/", help="Path to save the generated responses")
     
-    
-
-print(test_data.keys())
-print(test_data["dreaddit_augmented"][:10])
+    args = parser.parse_args()
+    main(args.datasets, args.model_path, args.option, args.load_custom_pretrained, args.custom_pretrained_path, args.output_path)
