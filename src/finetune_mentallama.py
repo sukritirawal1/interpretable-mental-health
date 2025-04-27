@@ -57,6 +57,10 @@ class MentaLLaMATrainer:
                 )
                 
                 self.model = get_peft_model(self.model, lora_config)
+                state_dict = torch.load('../output/mentallama_DR_finetuned.pt', map_location=self.device)
+                self.model.load_state_dict(state_dict, strict=False)
+                print('loaded')
+                
                 
             except ImportError:
                 # Fallback to regular training with mixed precision
@@ -72,7 +76,7 @@ class MentaLLaMATrainer:
         # self.model.gradient_checkpointing_enable()
 
         self.model.config.pad_token_id = self.tokenizer.pad_token_id
-        self.bart_scorer = BARTScorer(device=self.device, checkpoint='facebook/bart-large-cnn')
+        # self.bart_scorer = BARTScorer(device=self.device, checkpoint='facebook/bart-large-cnn')
         
         self.dataset = ExplanationDataset(data_path=data_path)
         self.dataset_name = dataset_name
@@ -129,7 +133,7 @@ class MentaLLaMATrainer:
                     generated_ids = self.model.generate(
                         input_ids=batch['input_ids'],
                         attention_mask=batch['attention_mask'],
-                        max_new_tokens=100,
+                        max_new_tokens=200,
                         pad_token_id=self.tokenizer.pad_token_id,
                         eos_token_id=self.tokenizer.eos_token_id,
                         do_sample=False,  # Use greedy decoding
@@ -163,10 +167,14 @@ class MentaLLaMATrainer:
         print(f"Average Loss: {avg_loss:.4f}")
         
     def validate(self, val_loader):
+        gc.collect()
+        torch.cuda.empty_cache()
         self.model.eval()
         total_loss = 0
         with torch.no_grad():
             for batch in tqdm(val_loader, desc="Validation"):
+                gc.collect()
+                torch.cuda.empty_cache()
                 batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 
                 input_ids = batch['input_ids']
@@ -175,7 +183,7 @@ class MentaLLaMATrainer:
                 numeric_labels = batch['numeric_labels']
                 
                 with torch.no_grad():
-                    generated_ids = self.model.generate(input_ids=input_ids, attention_mask=attention_mask, max_new_tokens=2048)
+                    generated_ids = self.model.generate(input_ids=input_ids, attention_mask=attention_mask, max_new_tokens=500)
                 generated_texts = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
 
                 loss = self.criterion(numeric_labels, generated_texts, goldens)
@@ -200,12 +208,12 @@ class MentaLLaMATrainer:
 
     def train_model(self):
         self.model.train()
-        train_loader, val_loader = self.get_train_val_dataloaders(self.dataset, val_split=0.2)
+        train_loader, val_loader = self.get_train_val_dataloaders(self.dataset, val_split=0.5)
         for epoch in range(self.epochs):
             print(f"Epoch {epoch+1}/{self.epochs}")
             self.train_epoch(self.optimizer, self.criterion, train_loader)
-            self.validate(val_loader)
             torch.save(self.model.state_dict(), self.model_output_path)
+            # self.validate(val_loader)
 
         #torch.save(self.model.state_dict(), "mentallama_dreadit_finetuned.pt")
         
