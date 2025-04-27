@@ -11,6 +11,11 @@ from transformers import LlamaTokenizer, LlamaForCausalLM
 from combined_bart_loss import CombinedBARTLoss
 
 from ExplanationDataset import ExplanationDataset 
+import gc
+
+gc.collect()
+torch.cuda.empty_cache()
+
 
 class MentaLLaMATrainer:
     def __init__(self, model_name, dataset_name, data_path, model_output_path = "../output/mentallama_dr.pt", compare_type="original", alpha=0.7,
@@ -26,10 +31,45 @@ class MentaLLaMATrainer:
         self.tokenizer = LlamaTokenizer.from_pretrained(model_name)
         self.tokenizer.padding_side = 'left'
         self.tokenizer.pad_token = self.tokenizer.pad_token or self.tokenizer.eos_token
+    
         
-        self.model = LlamaForCausalLM.from_pretrained(model_name, device_map="auto", load_in_8bit=True)
-        self.model.config.use_cache = False
-        self.model.gradient_checkpointing_enable()
+        if torch.cuda.is_available():
+            try:
+                # For bitsandbytes quantization
+                self.model = LlamaForCausalLM.from_pretrained(
+                    model_name, 
+                    load_in_8bit=True,
+                    device_map="auto",
+                    torch_dtype=torch.float16,
+                )
+                
+                from peft import prepare_model_for_kbit_training, LoraConfig, get_peft_model
+                
+                self.model = prepare_model_for_kbit_training(self.model)
+                
+                lora_config = LoraConfig(
+                    r=16,
+                    lora_alpha=32,
+                    target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
+                    lora_dropout=0.05,
+                    bias="none",
+                    task_type="CAUSAL_LM"
+                )
+                
+                self.model = get_peft_model(self.model, lora_config)
+                
+            except ImportError:
+                # Fallback to regular training with mixed precision
+                print("bitsandbytes or PEFT not available, falling back to regular fine-tuning")
+                self.model = LlamaForCausalLM.from_pretrained(
+                    model_name,
+                    device_map="auto",
+                    torch_dtype=torch.float16,
+            )
+        
+        # self.model = LlamaForCausalLM.from_pretrained(model_name, device_map="auto", load_in_8bit=True)
+        # self.model.config.use_cache = False
+        # self.model.gradient_checkpointing_enable()
 
         self.model.config.pad_token_id = self.tokenizer.pad_token_id
         self.bart_scorer = BARTScorer(device=self.device, checkpoint='facebook/bart-large-cnn')
@@ -67,46 +107,60 @@ class MentaLLaMATrainer:
         self.model.train()
         total_loss = 0
         
-        ## reference model
-        # ref_model = type(self.model).from_pretrained(self.model_name)
-        # ref_model.to(self.device)
-        # ref_model.eval()
-        
         for batch in tqdm(dataloader, desc="Training"):
+            gc.collect()
+            torch.cuda.empty_cache()
             optimizer.zero_grad()
             
             batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             
-            with torch.no_grad():
-                generated_ids = self.model.generate(
+            # Use mixed precision training
+            with autocast(dtype=torch.float16, enabled=torch.cuda.is_available()):
+                outputs = self.model(
                     input_ids=batch['input_ids'],
                     attention_mask=batch['attention_mask'],
-                    max_new_tokens=100,
-                    pad_token_id = self.tokenizer.pad_token_id,
-                    eos_token_id = self.tokenizer.eos_token_id
+                    labels=batch['input_ids']
                 )
-                generated_texts = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
-                combined_score = -criterion(batch['numeric_labels'], generated_texts, batch['goldens']).item()
+                ce_loss = outputs.loss
+                
+            # Generate text for reward calculation
+            with torch.no_grad():
+                try:
+                    generated_ids = self.model.generate(
+                        input_ids=batch['input_ids'],
+                        attention_mask=batch['attention_mask'],
+                        max_new_tokens=100,
+                        pad_token_id=self.tokenizer.pad_token_id,
+                        eos_token_id=self.tokenizer.eos_token_id,
+                        do_sample=False,  # Use greedy decoding
+                        num_beams=1       # Simple generation
+                    )
+                    generated_texts = self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
+                    
+                    # Calculate reward with error handling
+                    try:
+                        reward_score = criterion(batch['numeric_labels'], generated_texts, batch['goldens'])
+                        reward = torch.clamp(reward_score, min=-10.0, max=10.0).to(self.device)
+                    except Exception as e:
+                        print(f"Error in reward calculation: {e}")
+                        reward = torch.tensor(1.0, device=self.device)
+                except Exception as e:
+                    print(f"Error in generation: {e}")
+                    reward = torch.tensor(1.0, device=self.device)
             
-            #teacher forcing
-            outputs = self.model(
-                input_ids=generated_ids[:, :-1],
-                attention_mask=torch.ones_like(generated_ids[:, :-1]),
-                labels=generated_ids[:, 1:]
-            )
+            # Scale loss by reward
+            loss = ce_loss * reward
+            print(loss.item())
             
-            # Use reward (combined_score) to scale the loss
-            # This is a simple form of REINFORCE algorithm
-            reward = torch.tensor(combined_score, device=self.device)
-            loss = outputs.loss * reward
-            
-            loss.backward()
-            optimizer.step()
+            # Use gradient scaling for mixed precision training
+            self.scaler.scale(loss).backward()
+            self.scaler.step(optimizer)
+            self.scaler.update()
             
             total_loss += loss.item()
-            
-            avg_loss = total_loss / len(dataloader)
-            print(f"Average Loss: {avg_loss:.4f}")
+        
+        avg_loss = total_loss / len(dataloader)
+        print(f"Average Loss: {avg_loss:.4f}")
         
     def validate(self, val_loader):
         self.model.eval()
@@ -138,7 +192,7 @@ class MentaLLaMATrainer:
         
         train_dataset = torch.utils.data.Subset(dataset, train_indices)
         val_dataset = torch.utils.data.Subset(dataset, val_indices)
-        
+        print(len(train_dataset))
         train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, collate_fn=self.collate_fn)
         val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, collate_fn=self.collate_fn)
         return train_loader, val_loader
@@ -151,9 +205,10 @@ class MentaLLaMATrainer:
             print(f"Epoch {epoch+1}/{self.epochs}")
             self.train_epoch(self.optimizer, self.criterion, train_loader)
             self.validate(val_loader)
+            torch.save(self.model.state_dict(), self.model_output_path)
 
         #torch.save(self.model.state_dict(), "mentallama_dreadit_finetuned.pt")
-        torch.save(self.model.state_dict(), self.model_output_path)
+        
 
 def main():
     parser = argparse.ArgumentParser(description="Fine-tune MentaLLaMA on mental health explanations")
