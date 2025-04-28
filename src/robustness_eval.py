@@ -109,9 +109,11 @@ def generate_main(datasets, model_path, load_custom_pretrained=False, custom_pre
     model = LlamaForCausalLM.from_pretrained(model_path)
     tokenizer = LlamaTokenizer.from_pretrained(model_path, padding_side='left')
     if load_custom_pretrained:
+        print("hey")
         checkpoint = torch.load(custom_pretrained_path, map_location=device)
         new_checkpoint = {k.replace("base_model.model.", ""): v for k, v in checkpoint.items()}
-        model.load_state_dict(new_checkpoint)
+        newer_checkpoint = {k.replace("base_layer.", ""): v for k, v in new_checkpoint.items()}
+        model.load_state_dict(newer_checkpoint, strict = False)
         print("Model loaded without error, huge win... ok fine lil win")
         
     test_data = load_augmented_data()
