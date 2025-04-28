@@ -45,16 +45,21 @@ def generate_response(model, tokenizer, queries, batch_size=5):
     print(len(queries))
     for i in tqdm(range(0, len(queries), batch_size)):
         batch_data = queries[i: min(i+batch_size, len(queries))]
-        #print(batch_data[:2])
         inputs = tokenizer(batch_data, return_tensors="pt", padding=True)
-        #print(inputs)
-        #final_input = inputs.input_ids
-        input_ids = inputs.input_ids.to(device)
-        attention_mask = inputs.attention_mask.to(device)
-        #print(final_input)
-        generate_ids = model.generate(input_ids, attention_mask=attention_mask, max_length=2048)
+        
+        # Explicitly move inputs to the same device as the model
+        device = next(model.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+        
+        generate_ids = model.generate(
+            input_ids=inputs['input_ids'],
+            attention_mask=inputs['attention_mask'], 
+            use_cache=True,
+            max_new_tokens=128
+        )
+        
         for j in range(generate_ids.shape[0]):
-            truc_ids = generate_ids[j][len(input_ids[j]) :]
+            truc_ids = generate_ids[j][len(inputs['input_ids'][j]):]
             response = tokenizer.decode(truc_ids, skip_special_tokens=True, spaces_between_special_tokens=False)
             responses.append(response)
         print(i)
@@ -65,14 +70,13 @@ def generate_all_responses(model, tokenizer, test_data, device, batch_size, outp
     augmented_generated_text = {}
     golden_all = {}
 
-    model.to(device)
+    # No need to explicitly move model, as it's already set up with device_map in generate_main
+    # model.to(device)  # Remove this line
 
     for dataset_name in test_data.keys():
-        #if dataset_name not in ['DR', 'dreaddit']:
-        #    continue
         print('Generating for dataset: {}'.format(dataset_name))
         queries, augmented_queries, goldens = test_data[dataset_name]
-        golden_all[dataset_name]  = goldens
+        golden_all[dataset_name] = goldens
         
         responses = generate_response(model, tokenizer, queries, batch_size)
         generated_text[dataset_name] = responses
@@ -106,19 +110,30 @@ def bart_golden_score(bart_scorer, og_responses, goldens):
     
 def generate_main(datasets, model_path, load_custom_pretrained=False, custom_pretrained_path=None, output_path="../generated_responses/"):
     from transformers import LlamaForCausalLM, LlamaTokenizer
-    model = LlamaForCausalLM.from_pretrained(model_path)
+    
+    # Use single GPU mapping to avoid device mismatch issues
+    model = LlamaForCausalLM.from_pretrained(
+        model_path, 
+        torch_dtype=torch.bfloat16,
+        device_map={"": 0}  # Force model to be on a single GPU (cuda:0)
+    )
+    
     tokenizer = LlamaTokenizer.from_pretrained(model_path, padding_side='left')
+    model.eval()
+    
     if load_custom_pretrained:
-        print("hey")
-        checkpoint = torch.load(custom_pretrained_path, map_location=device)
+        print("Loading custom pretrained weights")
+        checkpoint = torch.load(custom_pretrained_path, map_location="cpu")
         new_checkpoint = {k.replace("base_model.model.", ""): v for k, v in checkpoint.items()}
         newer_checkpoint = {k.replace("base_layer.", ""): v for k, v in new_checkpoint.items()}
-        model.load_state_dict(newer_checkpoint, strict = False)
+        
+        # Load state dict after model is placed on device
+        model.load_state_dict(newer_checkpoint, strict=False)
         print("Model loaded without error, huge win... ok fine lil win")
         
     test_data = load_augmented_data()
     test_data = {k: test_data[k] for k in datasets}
-    batch_size = 5
+    batch_size = 2
     generated_text, augmented_generated_text, goldens = generate_all_responses(model, tokenizer, test_data, device, batch_size, output_path)
 
 def score_augments_main(datasets, output_path):
@@ -151,7 +166,7 @@ def score_golden_main(datasets, output_path):
     
 def main(datasets, model_path, option, load_custom_pretrained, custom_pretrained_path=None, output_path="../generated_responses/"):
     if option == "generate":
-        print("Loading cusom pretrained:", load_custom_pretrained, custom_pretrained_path)
+        print("Loading custom pretrained:", load_custom_pretrained, custom_pretrained_path)
         generate_main(datasets, model_path, load_custom_pretrained, custom_pretrained_path, output_path)
     elif option == "augment_score":
         score_augments_main(datasets, output_path)
