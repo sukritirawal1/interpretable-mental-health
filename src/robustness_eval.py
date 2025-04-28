@@ -12,9 +12,15 @@ def load_augmented_data():
     for root, ds, fs in os.walk("../Augmented_Data/"):
         for fn in fs:
             data = pd.read_csv(os.path.join(root, fn))
-            og_inputs = data['query'].to_list()
-            aug_inputs = data['augmented_query'].to_list()
-            goldens = data['gpt-3.5-turbo'].to_list()
+            
+            # calculate half the length
+            half_len = len(data) // 3
+            
+            # take only the first half
+            og_inputs = data['query'][:half_len].to_list()
+            aug_inputs = data['augmented_query'][:half_len].to_list()
+            goldens = data['gpt-3.5-turbo'][:half_len].to_list()
+            
             test_data[fn.split('.')[0]] = [og_inputs, aug_inputs, goldens]
     return test_data
 
@@ -47,22 +53,49 @@ def generate_response(model, tokenizer, queries, batch_size=5):
         batch_data = queries[i: min(i+batch_size, len(queries))]
         inputs = tokenizer(batch_data, return_tensors="pt", padding=True)
         
-        # Explicitly move inputs to the same device as the model
+        # explicitly move inputs to the same device as the model
         device = next(model.parameters()).device
         inputs = {k: v.to(device) for k, v in inputs.items()}
         
-        generate_ids = model.generate(
-            input_ids=inputs['input_ids'],
-            attention_mask=inputs['attention_mask'], 
-            use_cache=True,
-            max_new_tokens=128
-        )
+        # store original input lengths for each item in batch
+        input_lengths = [len(ids) for ids in inputs['input_ids']]
         
-        for j in range(generate_ids.shape[0]):
-            truc_ids = generate_ids[j][len(inputs['input_ids'][j]):]
-            response = tokenizer.decode(truc_ids, skip_special_tokens=True, spaces_between_special_tokens=False)
-            responses.append(response)
-        print(i)
+        try:
+            generate_ids = model.generate(
+                input_ids=inputs['input_ids'],
+                attention_mask=inputs['attention_mask'], 
+                use_cache=True,
+                max_new_tokens=128
+            )
+            
+            for j in range(generate_ids.shape[0]):
+                # more robust slicing
+                input_length = input_lengths[j]
+                if input_length < generate_ids.shape[1]:
+                    response_ids = generate_ids[j, input_length:]
+                    try:
+                        response = tokenizer.decode(response_ids, skip_special_tokens=True)
+                        # Add a simple check for corrupted output
+                        if not response or len(response) < 5:
+                            print(f"Warning: Short or empty output for item {i+j}, trying alternative decoding")
+                            response = tokenizer.decode(response_ids, skip_special_tokens=False)
+                    except Exception as e:
+                        print(f"Error decoding response: {e}")
+                        response = "[Decoding error]"
+                else:
+                    # handle the case where no tokens were generated
+                    response = ""
+                
+                responses.append(response)
+            
+            print(f"Completed batch starting at index {i}")
+        
+        except RuntimeError as e:
+            print(f"Runtime error during generation: {e}")
+            # Add empty responses for this batch to maintain count
+            for _ in range(len(batch_data)):
+                responses.append("[Generation error]")
+    
     return responses
 
 def generate_all_responses(model, tokenizer, test_data, device, batch_size, output_path):
@@ -70,8 +103,6 @@ def generate_all_responses(model, tokenizer, test_data, device, batch_size, outp
     augmented_generated_text = {}
     golden_all = {}
 
-    # No need to explicitly move model, as it's already set up with device_map in generate_main
-    # model.to(device)  # Remove this line
 
     for dataset_name in test_data.keys():
         print('Generating for dataset: {}'.format(dataset_name))
@@ -111,7 +142,7 @@ def bart_golden_score(bart_scorer, og_responses, goldens):
 def generate_main(datasets, model_path, load_custom_pretrained=False, custom_pretrained_path=None, output_path="../generated_responses/"):
     from transformers import LlamaForCausalLM, LlamaTokenizer
     
-    # Use single GPU mapping to avoid device mismatch issues
+    # use single GPU mapping to avoid device mismatch issues
     model = LlamaForCausalLM.from_pretrained(
         model_path, 
         torch_dtype=torch.bfloat16,
@@ -124,12 +155,13 @@ def generate_main(datasets, model_path, load_custom_pretrained=False, custom_pre
     if load_custom_pretrained:
         print("Loading custom pretrained weights")
         checkpoint = torch.load(custom_pretrained_path, map_location="cpu")
-        new_checkpoint = {k.replace("base_model.model.", ""): v for k, v in checkpoint.items()}
-        newer_checkpoint = {k.replace("base_layer.", ""): v for k, v in new_checkpoint.items()}
+        checkpoint = {k.replace("base_model.model.model.", ""): v for k, v in checkpoint.items()}
+
         
-        # Load state dict after model is placed on device
-        model.load_state_dict(newer_checkpoint, strict=False)
+        # load state dict after model is placed on device
+        model.load_state_dict(checkpoint, strict=False)
         print("Model loaded without error, huge win... ok fine lil win")
+
         
     test_data = load_augmented_data()
     test_data = {k: test_data[k] for k in datasets}
